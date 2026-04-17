@@ -1,0 +1,4 @@
+snowflake-connector-python
+bokeh
+pandas
+posit-sdk
