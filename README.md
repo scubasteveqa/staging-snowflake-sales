@@ -1,7 +1,10 @@
+To use this repo, you will need access to staging snowflake along with the Env variables listed below: 
+
+
 Env vars: 
 
-SNOWFLAKE_WAREHOUSE (default DEFAULT_WH) 
+SNOWFLAKE_WAREHOUSE: DEFAULT_WH
 
-SNOWFLAKE_DATABASE (default STEVEW_TEST_DB)
+SNOWFLAKE_DATABASE: STEVEW_TEST_DB
 
-SNOWFLAKE_SCHEMA (default PUBLIC)
+SNOWFLAKE_SCHEMA: PUBLIC
