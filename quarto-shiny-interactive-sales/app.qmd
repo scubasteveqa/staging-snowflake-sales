@@ -1,0 +1,189 @@
+---
+title: "Snowflake Dashboard (find by type)"
+format: dashboard
+server: shiny
+---
+
+```{r}
+#| context: setup
+library(DBI)
+library(odbc)
+library(connectapi)
+library(plotly)
+library(dplyr)
+
+fetch_snowflake <- function(access_token) {
+  conn <- dbConnect(
+    odbc::odbc(),
+    driver = "Snowflake",
+    Server = paste0(Sys.getenv("SNOWFLAKE_ACCOUNT"), ".snowflakecomputing.com"),
+    Database = Sys.getenv("SNOWFLAKE_DATABASE"),
+    Schema = Sys.getenv("SNOWFLAKE_SCHEMA"),
+    Warehouse = Sys.getenv("SNOWFLAKE_WAREHOUSE"),
+    Authenticator = "oauth",
+    Token = access_token
+  )
+  on.exit(dbDisconnect(conn))
+
+  df <- dbGetQuery(conn, "SELECT * FROM SALES")
+  names(df) <- toupper(names(df))
+  df$SALE_DATE <- as.Date(df$SALE_DATE)
+  df$MONTH <- format(df$SALE_DATE, "%Y-%m")
+  df
+}
+```
+
+# {.sidebar}
+
+OAuth via `get_associations()` + filter by template
+
+```{r}
+actionButton("load_data", "Refresh Data", class = "btn-primary w-100")
+tags$script(HTML(
+  "setTimeout(function() { document.getElementById('load_data').click(); }, 500);"
+))
+tags$hr()
+selectInput("category", "Category", choices = "All", selected = "All")
+selectInput("region", "Region", choices = "All", selected = "All")
+```
+
+```{r}
+#| context: server
+
+raw_data <- reactiveVal(NULL)
+
+observeEvent(input$load_data, {
+  session_token <- session$request$HTTP_POSIT_CONNECT_USER_SESSION_TOKEN
+  if (is.null(session_token) || session_token == "") {
+    showNotification("No session token found. Deploy on Posit Connect.",
+                     type = "error")
+    return()
+  }
+
+  client <- connectapi::connect()
+  current_content <- connectapi::content_item(client, Sys.getenv("CONNECT_CONTENT_GUID"))
+  associations <- connectapi::get_associations(current_content)
+
+  sf_assoc <- Filter(function(a) a$oauth_integration_template == "snowflake", associations)
+
+  if (length(sf_assoc) == 0) {
+    showNotification("No Snowflake integration found on this content", type = "error")
+    return()
+  }
+
+  sf_guid <- sf_assoc[[1]]$oauth_integration_guid
+
+  tryCatch({
+    creds <- connectapi::get_oauth_credentials(client, session_token, audience = sf_guid)
+    df <- fetch_snowflake(creds$access_token)
+    raw_data(df)
+
+    updateSelectInput(session, "category",
+                      choices = c("All", sort(unique(df$CATEGORY))), selected = "All")
+    updateSelectInput(session, "region",
+                      choices = c("All", sort(unique(df$REGION))), selected = "All")
+
+    showNotification(paste("Snowflake:", nrow(df), "rows"), type = "message")
+  }, error = function(e) {
+    showNotification(paste("Snowflake error:", conditionMessage(e)),
+                     type = "error", duration = 10)
+  })
+})
+
+filtered <- reactive({
+  df <- raw_data()
+  if (is.null(df)) return(NULL)
+  if (input$category != "All") df <- df[df$CATEGORY == input$category, ]
+  if (input$region != "All") df <- df[df$REGION == input$region, ]
+  df
+})
+```
+
+# Snowflake Sales
+
+## Row
+
+::: {.valuebox title="Total Sales" icon="currency-dollar" color="primary"}
+```{r}
+renderText({
+  df <- filtered()
+  if (is.null(df)) return("--")
+  paste0("$", formatC(sum(df$TOTAL_AMOUNT), format = "f", digits = 2, big.mark = ","))
+})
+```
+:::
+
+::: {.valuebox title="Orders" icon="cart" color="info"}
+```{r}
+renderText({
+  df <- filtered()
+  if (is.null(df)) return("--")
+  formatC(nrow(df), format = "d", big.mark = ",")
+})
+```
+:::
+
+::: {.valuebox title="Avg Order" icon="calculator" color="success"}
+```{r}
+renderText({
+  df <- filtered()
+  if (is.null(df) || nrow(df) == 0) return("--")
+  paste0("$", formatC(mean(df$TOTAL_AMOUNT), format = "f", digits = 2, big.mark = ","))
+})
+```
+:::
+
+## Row
+
+### Column
+
+```{r}
+#| title: Sales by Category
+plotlyOutput("chart_category")
+```
+
+```{r}
+#| context: server
+output$chart_category <- renderPlotly({
+  df <- filtered()
+  if (is.null(df)) return(plot_ly() |> layout(title = "Loading..."))
+  agg <- df |> group_by(CATEGORY) |> summarise(total = sum(TOTAL_AMOUNT), .groups = "drop")
+  plot_ly(agg, x = ~CATEGORY, y = ~total, color = ~CATEGORY, type = "bar") |>
+    layout(xaxis = list(title = "Category"), yaxis = list(title = "Sales ($)"))
+})
+```
+
+### Column
+
+```{r}
+#| title: Sales by Region
+plotlyOutput("chart_region")
+```
+
+```{r}
+#| context: server
+output$chart_region <- renderPlotly({
+  df <- filtered()
+  if (is.null(df)) return(plot_ly() |> layout(title = "Loading..."))
+  agg <- df |> group_by(REGION) |> summarise(total = sum(TOTAL_AMOUNT), .groups = "drop")
+  plot_ly(agg, labels = ~REGION, values = ~total, type = "pie")
+})
+```
+
+## Row
+
+```{r}
+#| title: Monthly Sales Trend
+plotlyOutput("chart_trend")
+```
+
+```{r}
+#| context: server
+output$chart_trend <- renderPlotly({
+  df <- filtered()
+  if (is.null(df)) return(plot_ly() |> layout(title = "Loading..."))
+  agg <- df |> group_by(MONTH) |> summarise(total = sum(TOTAL_AMOUNT), .groups = "drop") |> arrange(MONTH)
+  plot_ly(agg, x = ~MONTH, y = ~total, type = "scatter", mode = "lines+markers") |>
+    layout(xaxis = list(title = "Month"), yaxis = list(title = "Sales ($)"))
+})
+```
